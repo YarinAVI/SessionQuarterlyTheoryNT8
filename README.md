@@ -35,5 +35,6 @@ The active 90-minute quarter, session, and trading day are outlined when they ar
 
 - Session times are fixed to the Quarterly Theory cycle shown above.
 - Times use NinjaTrader's configured chart time zone.
+- Timeline detail automatically reduces when zoomed out to avoid unnecessary rendering work.
 - Legacy vertical session lines are not rendered.
 - The indicator is chart-only and does not place trades.

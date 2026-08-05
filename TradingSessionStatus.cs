@@ -1,6 +1,5 @@
 #region Using declarations
 using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
@@ -19,55 +18,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 {
 	public class TradingSessionStatus : Indicator
 	{
-		private class SessionRenderResources : IDisposable
-		{
-			public Brush WpfBrush { get; private set; }
-			public SharpDX.Direct2D1.SolidColorBrush LineBrush { get; private set; }
-			public SharpDX.Direct2D1.SolidColorBrush TextBrush { get; private set; }
-			public SharpDX.Direct2D1.SolidColorBrush AxisFillBrush { get; private set; }
+		private static readonly string[] QuarterLabels = { "Q1", "Q2", "Q3", "Q4" };
+		private static readonly string[] SessionLabels = { "Lon", "AM", "PM", "Asia" };
+		private static readonly string[] DayLabels = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 
-			public void Recreate(SharpDX.Direct2D1.RenderTarget renderTarget, Brush brush)
-			{
-				WpfBrush = brush;
-
-				DisposeDx();
-				if (renderTarget == null)
-					return;
-
-				SharpDX.Color4 baseColor = GetBrushColor(brush, 1f);
-				LineBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color4(baseColor.Red, baseColor.Green, baseColor.Blue, 0.55f));
-				TextBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color4(baseColor.Red, baseColor.Green, baseColor.Blue, 0.95f));
-				AxisFillBrush = new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color4(baseColor.Red, baseColor.Green, baseColor.Blue, 0.90f));
-			}
-
-			public void Dispose()
-			{
-				DisposeDx();
-				WpfBrush = null;
-			}
-
-			private void DisposeDx()
-			{
-				LineBrush?.Dispose();
-				LineBrush = null;
-
-				TextBrush?.Dispose();
-				TextBrush = null;
-
-				AxisFillBrush?.Dispose();
-				AxisFillBrush = null;
-			}
-		}
-
-		private SessionRenderResources asiaResources;
-		private SessionRenderResources londonResources;
-		private SessionRenderResources newYorkResources;
-		private SharpDX.Direct2D1.SolidColorBrush axisTextBrush;
-		private SharpDX.Direct2D1.SolidColorBrush axisBorderBrush;
-		private SharpDX.Direct2D1.StrokeStyle axisBorderStrokeStyle;
-		private SharpDX.Direct2D1.StrokeStyle closeLineStrokeStyle;
-		private TextFormat sessionLabelTextFormat;
-		private TextFormat axisBoxTextFormat;
 		private TextFormat timelineTextFormat;
 		private SharpDX.Direct2D1.SolidColorBrush timelineTextBrush;
 		private SharpDX.Direct2D1.SolidColorBrush timelineBorderBrush;
@@ -75,8 +29,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private SharpDX.Direct2D1.SolidColorBrush timelineNeutralBrush;
 		private SharpDX.Direct2D1.SolidColorBrush[] quarterBrushes;
 
-		private string instanceTag;
-		private string lastLabel;
 		private DateTime now = Core.Globals.Now;
 
 		protected override void OnStateChange()
@@ -85,7 +37,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				Description = @"Displays Quarterly Theory sessions and 90-minute quarters in a timeline below price, using NinjaTrader's configured time zone.";
 				Name = "TradingSessionStatus";
-				Calculate = Calculate.OnEachTick;
+				Calculate = Calculate.OnBarClose;
 				IsOverlay = true;
 				IsChartOnly = true;
 				DrawOnPricePanel = true;
@@ -119,28 +71,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 				System.Diagnostics.Debug.Assert(
 					GetSessionQuarterIndex(3) == 0
 					&& GetSessionQuarterIndex(0) == 1
-					&& GetWeekQuarterIndex(DayOfWeek.Wednesday) == 2,
+					&& GetWeekQuarterIndex(DayOfWeek.Wednesday) == 2
+					&& ShouldDrawLayer(0.1f, 90f, 6f)
+					&& !ShouldDrawLayer(0.01f, 90f, 6f),
 					"Quarterly timeline mapping is invalid.");
-
-				instanceTag = Guid.NewGuid().ToString("N");
-				lastLabel = string.Empty;
-				asiaResources = new SessionRenderResources();
-				londonResources = new SessionRenderResources();
-				newYorkResources = new SessionRenderResources();
-
-				sessionLabelTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 12f)
-				{
-					TextAlignment = TextAlignment.Leading,
-					ParagraphAlignment = ParagraphAlignment.Near,
-					WordWrapping = WordWrapping.NoWrap
-				};
-
-				axisBoxTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 12f)
-				{
-					TextAlignment = TextAlignment.Leading,
-					ParagraphAlignment = ParagraphAlignment.Center,
-					WordWrapping = WordWrapping.NoWrap
-				};
 
 				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 10f)
 				{
@@ -153,36 +87,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 			{
 				DisposeDxResources();
 
-				sessionLabelTextFormat?.Dispose();
-				sessionLabelTextFormat = null;
-
-				axisBoxTextFormat?.Dispose();
-				axisBoxTextFormat = null;
-
 				timelineTextFormat?.Dispose();
 				timelineTextFormat = null;
-
-				asiaResources = null;
-
-				londonResources = null;
-
-				newYorkResources = null;
-			}
-		}
-
-		protected override void OnBarUpdate()
-		{
-			if (CurrentBar < 0)
-				return;
-
-			if (ShowLabel)
-			{
-				string label = BuildLabel(Now);
-				if (!string.Equals(label, lastLabel, StringComparison.Ordinal))
-				{
-					Draw.TextFixedFine(this, $"TradingSessionStatus_Label_{instanceTag}", label, LabelPosition);
-					lastLabel = label;
-				}
 			}
 		}
 
@@ -194,12 +100,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (RenderTarget == null)
 				return;
 
-			asiaResources?.Recreate(RenderTarget, AsiaLineBrush);
-			londonResources?.Recreate(RenderTarget, LondonLineBrush);
-			newYorkResources?.Recreate(RenderTarget, NewYorkLineBrush);
-
-			axisTextBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(1f, 1f, 1f, 1f));
-			axisBorderBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.35f));
 			timelineTextBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.12f, 0.14f, 0.18f, 0.95f));
 			timelineBorderBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.24f, 0.27f, 0.32f, 0.55f));
 			timelineActiveBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.04f, 0.05f, 0.07f, 0.95f));
@@ -211,22 +111,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 				new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.74f, 0.84f, 0.72f, 0.92f)),
 				new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.72f, 0.76f, 0.87f, 0.92f))
 			};
-
-			axisBorderStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(RenderTarget.Factory, new SharpDX.Direct2D1.StrokeStyleProperties
-			{
-				DashStyle = SharpDX.Direct2D1.DashStyle.Solid,
-				StartCap = SharpDX.Direct2D1.CapStyle.Flat,
-				EndCap = SharpDX.Direct2D1.CapStyle.Flat,
-				LineJoin = SharpDX.Direct2D1.LineJoin.Miter
-			});
-
-			closeLineStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(RenderTarget.Factory, new SharpDX.Direct2D1.StrokeStyleProperties
-			{
-				DashStyle = SharpDX.Direct2D1.DashStyle.Dash,
-				StartCap = SharpDX.Direct2D1.CapStyle.Flat,
-				EndCap = SharpDX.Direct2D1.CapStyle.Flat,
-				LineJoin = SharpDX.Direct2D1.LineJoin.Miter
-			});
 		}
 
 		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
@@ -263,6 +147,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 			const float sessionHeight = 24f;
 			const float dayHeight = 20f;
 			const float bottomMargin = 2f;
+			const float minDetailedCellWidth = 6f;
+			const float minDayCellWidth = 2f;
 
 			float stripTop = (float)ChartPanel.Y + (float)ChartPanel.H
 				- quarterHeight - sessionHeight - dayHeight - bottomMargin;
@@ -272,33 +158,61 @@ namespace NinjaTrader.NinjaScript.Indicators
 			float quarterY = stripTop;
 			float sessionY = quarterY + quarterHeight;
 			float dayY = sessionY + sessionHeight;
-			DateTime firstDay = visibleStart.Date.AddDays(-1);
-			DateTime lastDay = visibleEnd.Date.AddDays(1);
+			double visibleMinutes = Math.Max(1d, (visibleEnd - visibleStart).TotalMinutes);
+			float pixelsPerMinute = (float)ChartPanel.W / (float)visibleMinutes;
+			bool drawQuarters = ShouldDrawLayer(pixelsPerMinute, 90f, minDetailedCellWidth);
+			bool drawSessions = ShouldDrawLayer(pixelsPerMinute, 360f, minDetailedCellWidth);
+			bool drawDays = ShouldDrawLayer(pixelsPerMinute, 1440f, minDayCellWidth);
+			if (!drawQuarters && !drawSessions && !drawDays)
+				return;
 
-			for (DateTime day = firstDay; day <= lastDay; day = day.AddDays(1))
+			if (drawQuarters || drawSessions)
 			{
-				for (int sessionIndex = 0; sessionIndex < 4; sessionIndex++)
+				DateTime sessionStart = visibleStart.Date.AddHours((visibleStart.Hour / 6) * 6);
+				float sessionStartX = chartControl.GetXByTime(sessionStart);
+				while (sessionStart <= visibleEnd)
 				{
-					DateTime sessionStart = day.AddHours(sessionIndex * 6);
 					DateTime sessionEnd = sessionStart.AddHours(6);
-					int sessionQuarter = GetSessionQuarterIndex(sessionIndex);
+					float sessionEndX = chartControl.GetXByTime(sessionEnd);
+					int sessionIndex = sessionStart.Hour / 6;
 
-					DrawTimelineCell(chartControl, sessionStart, sessionEnd, sessionY, sessionHeight,
-						GetSessionName(sessionIndex), quarterBrushes[sessionQuarter]);
+					if (drawSessions)
+						DrawTimelineCell(sessionStartX, sessionEndX, sessionY, sessionHeight,
+							SessionLabels[sessionIndex], quarterBrushes[GetSessionQuarterIndex(sessionIndex)]);
 
-					for (int quarterIndex = 0; quarterIndex < 4; quarterIndex++)
+					if (drawQuarters)
 					{
-						DateTime quarterStart = sessionStart.AddMinutes(quarterIndex * 90);
-						DrawTimelineCell(chartControl, quarterStart, quarterStart.AddMinutes(90), quarterY,
-							quarterHeight, "Q" + (quarterIndex + 1), quarterBrushes[quarterIndex]);
+						float quarterStartX = sessionStartX;
+						for (int quarterIndex = 0; quarterIndex < 4; quarterIndex++)
+						{
+							float quarterEndX = quarterIndex == 3
+								? sessionEndX
+								: chartControl.GetXByTime(sessionStart.AddMinutes((quarterIndex + 1) * 90));
+							DrawTimelineCell(quarterStartX, quarterEndX, quarterY, quarterHeight,
+								QuarterLabels[quarterIndex], quarterBrushes[quarterIndex]);
+							quarterStartX = quarterEndX;
+						}
 					}
-				}
 
-				DateTime tradingDayStart = day.AddHours(18);
-				DateTime tradingDate = day.AddDays(1);
-				int weekQuarter = GetWeekQuarterIndex(tradingDate.DayOfWeek);
-				DrawTimelineCell(chartControl, tradingDayStart, tradingDayStart.AddDays(1), dayY, dayHeight,
-					tradingDate.ToString("ddd"), weekQuarter >= 0 ? quarterBrushes[weekQuarter] : timelineNeutralBrush);
+					sessionStart = sessionEnd;
+					sessionStartX = sessionEndX;
+				}
+			}
+
+			if (drawDays)
+			{
+				DateTime tradingDayStart = visibleStart.Date.AddDays(-1).AddHours(18);
+				float tradingDayStartX = chartControl.GetXByTime(tradingDayStart);
+				for (; tradingDayStart <= visibleEnd; tradingDayStart = tradingDayStart.AddDays(1))
+				{
+					DateTime tradingDayEnd = tradingDayStart.AddDays(1);
+					float tradingDayEndX = chartControl.GetXByTime(tradingDayEnd);
+					DayOfWeek tradingDay = tradingDayEnd.DayOfWeek;
+					int weekQuarter = GetWeekQuarterIndex(tradingDay);
+					DrawTimelineCell(tradingDayStartX, tradingDayEndX, dayY, dayHeight,
+						DayLabels[(int)tradingDay], weekQuarter >= 0 ? quarterBrushes[weekQuarter] : timelineNeutralBrush);
+					tradingDayStartX = tradingDayEndX;
+				}
 			}
 
 			DateTime nowTime = Now;
@@ -310,21 +224,22 @@ namespace NinjaTrader.NinjaScript.Indicators
 				? nowTime.Date.AddHours(18)
 				: nowTime.Date.AddDays(-1).AddHours(18);
 
-			DrawTimelineOutline(chartControl, activeQuarterStart, activeQuarterStart.AddMinutes(90), quarterY, quarterHeight, 2f);
-			DrawTimelineOutline(chartControl, activeSessionStart, activeSessionStart.AddHours(6), sessionY, sessionHeight, 2f);
-			DrawTimelineOutline(chartControl, activeTradingDayStart, activeTradingDayStart.AddDays(1), dayY, dayHeight, 2f);
+			if (drawQuarters)
+				DrawTimelineOutline(chartControl, activeQuarterStart, activeQuarterStart.AddMinutes(90), quarterY, quarterHeight, 2f);
+			if (drawSessions)
+				DrawTimelineOutline(chartControl, activeSessionStart, activeSessionStart.AddHours(6), sessionY, sessionHeight, 2f);
+			if (drawDays)
+				DrawTimelineOutline(chartControl, activeTradingDayStart, activeTradingDayStart.AddDays(1), dayY, dayHeight, 2f);
 		}
 
-		private void DrawTimelineCell(ChartControl chartControl, DateTime start, DateTime end, float y, float height,
+		private void DrawTimelineCell(float startX, float endX, float y, float height,
 			string text, SharpDX.Direct2D1.Brush fillBrush)
 		{
 			float panelLeft = (float)ChartPanel.X;
 			float panelRight = panelLeft + (float)ChartPanel.W;
-			float startX = chartControl.GetXByTime(start);
-			float endX = chartControl.GetXByTime(end);
 			float left = Math.Max(panelLeft, Math.Min(startX, endX));
 			float right = Math.Min(panelRight, Math.Max(startX, endX));
-			if (right <= left)
+			if (right - left < 1f)
 				return;
 
 			var rect = new RectangleF(left, y, right - left, height);
@@ -354,15 +269,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 			return (sessionIndex + 1) % 4;
 		}
 
-		private static string GetSessionName(int sessionIndex)
+		private static bool ShouldDrawLayer(float pixelsPerMinute, float durationMinutes, float minimumWidth)
 		{
-			switch (sessionIndex)
-			{
-				case 0: return "Lon";
-				case 1: return "AM";
-				case 2: return "PM";
-				default: return "Asia";
-			}
+			return pixelsPerMinute * durationMinutes >= minimumWidth;
 		}
 
 		private static int GetWeekQuarterIndex(DayOfWeek dayOfWeek)
@@ -374,329 +283,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 				case DayOfWeek.Wednesday: return 2;
 				case DayOfWeek.Thursday: return 3;
 				default: return -1;
-			}
-		}
-
-		private void DrawSessionMarker(ChartControl chartControl, ChartScale chartScale, DateTime time, string label, SessionRenderResources resources, int sessionId, bool isClose, HashSet<long> dedupe, Dictionary<int, int> markerCollisionCounts, SharpDX.Direct2D1.StrokeStyle strokeStyle)
-		{
-			if (chartControl == null || resources?.LineBrush == null || ChartPanel == null || Bars == null || Bars.Count < 1)
-				return;
-
-			DateTime firstBarTime = Bars.GetTime(0);
-			DateTime lastBarTime = Bars.GetTime(Bars.Count - 1);
-			if (time < firstBarTime || time > lastBarTime)
-				return;
-
-			int barIndex = Bars.GetBar(time);
-			if (barIndex < 0)
-				return;
-
-			long dedupeKey = ((long)barIndex << 3) | ((long)(sessionId & 0x3) << 1) | (isClose ? 1 : 0);
-			if (dedupe != null && !dedupe.Add(dedupeKey))
-				return;
-
-			float x = GetMarkerX(chartControl, time, barIndex, isClose);
-			float left = (float)ChartPanel.X;
-			float right = left + (float)ChartPanel.W;
-			if (x < left || x > right)
-				return;
-
-			float yTop = (float)ChartPanel.Y;
-			float yBottom = yTop + (float)ChartPanel.H;
-
-			float width = Math.Max(1f, LineWidth);
-			if (strokeStyle == null)
-				RenderTarget.DrawLine(new Vector2(x, yTop), new Vector2(x, yBottom), resources.LineBrush, width);
-			else
-				RenderTarget.DrawLine(new Vector2(x, yTop), new Vector2(x, yBottom), resources.LineBrush, width, strokeStyle);
-
-			if (ShowLineLabels && resources.TextBrush != null && resources.AxisFillBrush != null)
-			{
-				int collisionSlot = ReserveCollisionSlot(markerCollisionCounts, x);
-				DrawVerticalLabel(x, label, resources.TextBrush, yTop, yBottom, barIndex, chartScale, collisionSlot);
-				DrawAxisBox(x, time, resources.AxisFillBrush, collisionSlot);
-			}
-		}
-
-		private static int ReserveCollisionSlot(Dictionary<int, int> markerCollisionCounts, float x)
-		{
-			if (markerCollisionCounts == null)
-				return 0;
-
-			int key = (int)Math.Round(x);
-			if (markerCollisionCounts.TryGetValue(key, out int count))
-			{
-				markerCollisionCounts[key] = count + 1;
-				return count;
-			}
-
-			markerCollisionCounts[key] = 1;
-			return 0;
-		}
-
-		private float GetMarkerX(ChartControl chartControl, DateTime time, int barIndex, bool isClose)
-		{
-			float x = chartControl.GetXByBarIndex(ChartBars, barIndex);
-			if (!AvoidLabelOverlap || Bars == null || Bars.Count < 2)
-				return x;
-
-			DateTime barTime = Bars.GetTime(barIndex);
-			if (time == barTime)
-			{
-				if (barIndex > 0)
-				{
-					float xPrev = chartControl.GetXByBarIndex(ChartBars, barIndex - 1);
-					return (xPrev + x) / 2f;
-				}
-
-				float xNext = chartControl.GetXByBarIndex(ChartBars, barIndex + 1);
-				return (x + xNext) / 2f;
-			}
-
-			if (isClose)
-			{
-				float xNext;
-				if (barIndex < Bars.Count - 1)
-				{
-					xNext = chartControl.GetXByBarIndex(ChartBars, barIndex + 1);
-				}
-				else if (barIndex > 0)
-				{
-					float xPrev = chartControl.GetXByBarIndex(ChartBars, barIndex - 1);
-					xNext = x + (x - xPrev);
-				}
-				else
-				{
-					xNext = x + 10f;
-				}
-
-				return (x + xNext) / 2f;
-			}
-
-			return x;
-		}
-
-		private static DateTime GetSessionEndTime(DateTime day, TimeSpan start, TimeSpan end)
-		{
-			DateTime endTime = day.Add(end);
-			if (end <= start)
-				endTime = day.AddDays(1).Add(end);
-
-			return endTime;
-		}
-
-		private void DrawVerticalLabel(float x, string text, SharpDX.Direct2D1.Brush brush, float yTop, float yBottom, int barIndex, ChartScale chartScale, int collisionSlot)
-		{
-			if (string.IsNullOrWhiteSpace(text) || sessionLabelTextFormat == null || RenderTarget == null)
-				return;
-
-			const float padY = 6f;
-			using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, text, sessionLabelTextFormat, 300f, 24f))
-			{
-				float labelLen = (float)Math.Max(1d, layout.Metrics.Width);
-				float labelThickness = (float)Math.Max(1d, layout.Metrics.Height);
-				float panelHeight = Math.Max(1f, yBottom - yTop);
-				float bottomReservation = Math.Min(panelHeight * 0.30f, 44f);
-
-				float yMin = yTop + padY;
-				float yMax = yBottom - bottomReservation - labelLen;
-				if (yMax < yMin)
-					yMax = yMin;
-
-				// Default: keep the label near the bottom like TradingView.
-				float yStart = yMax;
-
-				// Dynamic: if we overlap nearby candles, move above/below the occupied range.
-				if (chartScale != null && TryGetOccupiedYRange(barIndex, chartScale, out float occTop, out float occBottom))
-				{
-					const float gap = 10f;
-					occTop = Math.Max(yTop, Math.Min(yBottom, occTop));
-					occBottom = Math.Max(yTop, Math.Min(yBottom, occBottom));
-
-					float labelTop = yStart;
-					float labelBottom = yStart + labelLen;
-					bool overlaps = labelTop <= occBottom && labelBottom >= occTop;
-
-					if (overlaps)
-					{
-						float belowStart = occBottom + gap;
-						float belowY = Math.Max(yMin, belowStart);
-						bool belowFits = belowY <= yMax;
-
-						float aboveY = Math.Min(yMax, (occTop - gap) - labelLen);
-						bool aboveFits = aboveY >= yMin;
-
-						if (belowFits)
-						{
-							// Put it as low as possible while staying below the candle range.
-							yStart = yMax;
-							if (yStart < belowY)
-								yStart = belowY;
-						}
-						else if (aboveFits)
-						{
-							// Put it as low as possible while staying above the candle range.
-							yStart = aboveY;
-						}
-					}
-				}
-
-					yStart += LineLabelOffsetTicks;
-					yStart = Math.Max(yMin, Math.Min(yMax, yStart));
-
-					float originY = yStart + labelLen;
-					float originX = GetLabelOriginX(x, labelThickness, collisionSlot);
-					Vector2 origin = new Vector2(originX, originY);
-
-					Matrix3x2 oldTransform = RenderTarget.Transform;
-					RenderTarget.Transform = Matrix3x2.Rotation(-(float)(Math.PI / 2.0), origin) * oldTransform;
-					RenderTarget.DrawTextLayout(origin, layout, brush);
-					RenderTarget.Transform = oldTransform;
-				}
-			}
-
-			private bool TryGetOccupiedYRange(int barIndex, ChartScale chartScale, out float yTop, out float yBottom)
-			{
-				yTop = float.MaxValue;
-				yBottom = float.MinValue;
-
-				if (Bars == null || Bars.Count < 1 || chartScale == null)
-					return false;
-
-				int first = Math.Max(0, barIndex - 2);
-				int last = Math.Min(Bars.Count - 1, barIndex + 2);
-				if (first > last)
-					return false;
-
-				for (int idx = first; idx <= last; idx++)
-				{
-					if (idx < 0 || idx >= Bars.Count)
-						continue;
-
-					double high = Bars.GetHigh(idx);
-					double low = Bars.GetLow(idx);
-					float highY = chartScale.GetYByValue(high);
-					float lowY = chartScale.GetYByValue(low);
-					float barTop = Math.Min(highY, lowY);
-					float barBottom = Math.Max(highY, lowY);
-					yTop = Math.Min(yTop, barTop);
-					yBottom = Math.Max(yBottom, barBottom);
-				}
-
-			if (yTop == float.MaxValue || yBottom == float.MinValue)
-				return false;
-
-			const float pad = 6f;
-			yTop -= pad;
-			yBottom += pad;
-			return true;
-		}
-
-		private float GetLabelOriginX(float lineX, float labelThickness, int collisionSlot)
-		{
-			if (ChartPanel == null)
-				return lineX;
-
-			float panelLeft = (float)ChartPanel.X;
-			float panelRight = panelLeft + (float)ChartPanel.W;
-
-			float spacing = GetEstimatedBarSpacing();
-			float pad = Math.Max(6f, spacing * 0.15f);
-
-			int slot = Math.Max(0, collisionSlot);
-			int layer = slot / 2;
-			bool preferLeft = (slot % 2) == 0;
-
-			float step = Math.Max(1f, labelThickness + pad);
-			float originLeft = lineX - step - (layer * step);
-			float originRight = lineX + pad + (layer * step);
-
-			bool leftOk = originLeft >= panelLeft;
-			bool rightOk = (originRight + labelThickness) <= panelRight;
-
-			if (preferLeft)
-			{
-				if (leftOk)
-					return originLeft;
-				if (rightOk)
-					return originRight;
-			}
-			else
-			{
-				if (rightOk)
-					return originRight;
-				if (leftOk)
-					return originLeft;
-			}
-
-			return Math.Max(panelLeft, Math.Min(panelRight - labelThickness, originLeft));
-		}
-
-		private float GetEstimatedBarSpacing()
-		{
-			if (ChartBars == null || ChartPanel == null)
-				return 10f;
-
-			int fromIndex = ChartBars.FromIndex;
-			int toIndex = ChartBars.ToIndex;
-			if (fromIndex < 0 || toIndex <= fromIndex)
-				return 10f;
-
-			float width = (float)ChartPanel.W;
-			int count = Math.Max(1, toIndex - fromIndex);
-			return width / count;
-		}
-
-		private void DrawAxisBox(float x, DateTime time, SharpDX.Direct2D1.Brush fillBrush, int collisionSlot)
-		{
-			if (axisBoxTextFormat == null || axisTextBrush == null || axisBorderBrush == null || RenderTarget == null || ChartPanel == null)
-				return;
-
-			string text = time.ToString("dd MMM ''yy  HH:mm");
-
-			const float paddingX = 8f;
-			const float paddingY = 4f;
-			const float radius = 4f;
-			float bottomMargin = 3f + (LineLabelOffsetTicks * 0.5f);
-
-			using (var layout = new TextLayout(Core.Globals.DirectWriteFactory, text, axisBoxTextFormat, 240f, 24f))
-			{
-				float textW = (float)Math.Ceiling(layout.Metrics.Width);
-				float textH = (float)Math.Ceiling(layout.Metrics.Height);
-
-				float boxW = textW + (paddingX * 2);
-				float boxH = textH + (paddingY * 2);
-
-				float left = x - (boxW / 2f);
-				float panelLeft = (float)ChartPanel.X + 2f;
-				float panelRight = (float)ChartPanel.X + (float)ChartPanel.W - 2f;
-				if (left < panelLeft)
-					left = panelLeft;
-				if (left + boxW > panelRight)
-					left = panelRight - boxW;
-
-				float top = (float)ChartPanel.Y + (float)ChartPanel.H - bottomMargin - boxH;
-				if (collisionSlot > 0)
-				{
-					const float gapY = 2f;
-					top -= collisionSlot * (boxH + gapY);
-					float minTop = (float)ChartPanel.Y + 2f;
-					if (top < minTop)
-						top = minTop;
-				}
-
-				var rect = new RectangleF(left, top, boxW, boxH);
-				var rr = new SharpDX.Direct2D1.RoundedRectangle
-				{
-					Rect = rect,
-					RadiusX = radius,
-					RadiusY = radius
-				};
-
-				RenderTarget.FillRoundedRectangle(rr, fillBrush);
-				RenderTarget.DrawRoundedRectangle(rr, axisBorderBrush, 1f, axisBorderStrokeStyle);
-
-				RenderTarget.DrawTextLayout(new Vector2(left + paddingX, top + paddingY), layout, axisTextBrush);
 			}
 		}
 
@@ -720,65 +306,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 					brush?.Dispose();
 				quarterBrushes = null;
 			}
-
-			axisTextBrush?.Dispose();
-			axisTextBrush = null;
-
-			axisBorderBrush?.Dispose();
-			axisBorderBrush = null;
-
-			axisBorderStrokeStyle?.Dispose();
-			axisBorderStrokeStyle = null;
-
-			closeLineStrokeStyle?.Dispose();
-			closeLineStrokeStyle = null;
-
-			asiaResources?.Dispose();
-			londonResources?.Dispose();
-			newYorkResources?.Dispose();
-		}
-
-		private static SharpDX.Color4 GetBrushColor(Brush brush, float alpha)
-		{
-			if (brush is SolidColorBrush scb)
-			{
-				System.Windows.Media.Color c = scb.Color;
-				return new SharpDX.Color4(c.R / 255f, c.G / 255f, c.B / 255f, Math.Max(0f, Math.Min(1f, alpha)));
-			}
-
-			return new SharpDX.Color4(1f, 1f, 1f, Math.Max(0f, Math.Min(1f, alpha)));
-		}
-
-		private string BuildLabel(DateTime time)
-		{
-			bool inAsia = IsInSession(time, AsiaStartTime.TimeOfDay, AsiaEndTime.TimeOfDay);
-			bool inLondon = IsInSession(time, LondonStartTime.TimeOfDay, LondonEndTime.TimeOfDay);
-			bool inNy = IsInSession(time, NewYorkStartTime.TimeOfDay, NewYorkEndTime.TimeOfDay);
-
-			List<string> active = new List<string>(3);
-			if (inAsia) active.Add("ASIA");
-			if (inLondon) active.Add("LONDON");
-			if (inNy) active.Add("NY");
-
-			if (active.Count == 0)
-				return "Session: NONE";
-			if (active.Count == 1)
-				return $"Session: {active[0]}";
-
-			return $"Session: {string.Join(" + ", active)} (OVERLAP)";
-		}
-
-		private static bool IsInSession(DateTime time, TimeSpan start, TimeSpan end)
-		{
-			TimeSpan tod = time.TimeOfDay;
-
-			if (start == end)
-				return true;
-
-			if (start < end)
-				return tod >= start && tod < end;
-
-			return tod >= start || tod < end;
 		}
 
 		private DateTime Now
