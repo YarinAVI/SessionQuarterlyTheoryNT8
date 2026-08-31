@@ -88,7 +88,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 						TimeZoneInfo.FindSystemTimeZoneById("Israel Standard Time")).Hour == 14,
 					"Quarterly timeline mapping is invalid.");
 
-				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 10f)
+				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 12f)
 				{
 					TextAlignment = TextAlignment.Center,
 					ParagraphAlignment = ParagraphAlignment.Center,
@@ -306,7 +306,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				{
 					Foreground = Brushes.Gainsboro,
 					FontFamily = new System.Windows.Media.FontFamily("Arial"),
-					FontSize = 10,
+					FontSize = 12,
 					FontWeight = System.Windows.FontWeights.SemiBold,
 					HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
 					VerticalAlignment = System.Windows.VerticalAlignment.Center,
