@@ -2,6 +2,7 @@
 using System;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using NinjaTrader.Cbi;
@@ -21,6 +22,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private static readonly string[] QuarterLabels = { "Q1", "Q2", "Q3", "Q4" };
 		private static readonly string[] SessionLabels = { "Lon", "AM", "PM", "Asia" };
 		private static readonly string[] DayLabels = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+		private static readonly int[] TimeLabelIntervals = { 1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 10080 };
 
 		private TextFormat timelineTextFormat;
 		private SharpDX.Direct2D1.SolidColorBrush timelineTextBrush;
@@ -28,6 +30,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private SharpDX.Direct2D1.SolidColorBrush timelineActiveBrush;
 		private SharpDX.Direct2D1.SolidColorBrush timelineNeutralBrush;
 		private SharpDX.Direct2D1.SolidColorBrush[] quarterBrushes;
+		private ChartControl crosshairChartControl;
+		private System.Windows.Controls.Border crosshairTimeMarker;
+		private System.Windows.Controls.TextBlock crosshairTimeText;
 
 		private DateTime now = Core.Globals.Now;
 
@@ -47,6 +52,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				ShowLabel = false;
 				LabelPosition = TextPositionFine.TopMiddle;
+				ShowSecondaryTimeZone = true;
+				UseLocalMachineTime = false;
+				SecondaryTimeZoneId = "Israel Standard Time";
 
 					DrawSessionLines = false;
 					DrawSessionCloseLines = false;
@@ -73,7 +81,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 					&& GetSessionQuarterIndex(0) == 1
 					&& GetWeekQuarterIndex(DayOfWeek.Wednesday) == 2
 					&& ShouldDrawLayer(0.1f, 90f, 6f)
-					&& !ShouldDrawLayer(0.01f, 90f, 6f),
+					&& !ShouldDrawLayer(0.01f, 90f, 6f)
+					&& GetTimeLabelIntervalMinutes(1f) == 60
+					&& GetFirstTimeLabel(new DateTime(2026, 1, 1, 12, 34, 0), 60).Hour == 13
+					&& ConvertChartTime(new DateTime(2026, 1, 1, 12, 0, 0), TimeZoneInfo.Utc,
+						TimeZoneInfo.FindSystemTimeZoneById("Israel Standard Time")).Hour == 14,
 					"Quarterly timeline mapping is invalid.");
 
 				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 10f)
@@ -83,8 +95,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 					WordWrapping = WordWrapping.NoWrap
 				};
 			}
+			else if (State == State.Historical)
+			{
+				SubscribeCrosshair();
+			}
 			else if (State == State.Terminated)
 			{
+				UnsubscribeCrosshair();
 				DisposeDxResources();
 
 				timelineTextFormat?.Dispose();
@@ -146,24 +163,27 @@ namespace NinjaTrader.NinjaScript.Indicators
 			const float quarterHeight = 22f;
 			const float sessionHeight = 24f;
 			const float dayHeight = 20f;
+			const float secondaryTimeHeight = 20f;
 			const float bottomMargin = 2f;
 			const float minDetailedCellWidth = 6f;
 			const float minDayCellWidth = 2f;
 
 			float stripTop = (float)ChartPanel.Y + (float)ChartPanel.H
-				- quarterHeight - sessionHeight - dayHeight - bottomMargin;
+				- quarterHeight - sessionHeight - dayHeight
+				- (ShowSecondaryTimeZone ? secondaryTimeHeight : 0f) - bottomMargin;
 			if (stripTop < ChartPanel.Y)
 				return;
 
 			float quarterY = stripTop;
 			float sessionY = quarterY + quarterHeight;
 			float dayY = sessionY + sessionHeight;
+			float secondaryTimeY = dayY + dayHeight;
 			double visibleMinutes = Math.Max(1d, (visibleEnd - visibleStart).TotalMinutes);
 			float pixelsPerMinute = (float)ChartPanel.W / (float)visibleMinutes;
 			bool drawQuarters = ShouldDrawLayer(pixelsPerMinute, 90f, minDetailedCellWidth);
 			bool drawSessions = ShouldDrawLayer(pixelsPerMinute, 360f, minDetailedCellWidth);
 			bool drawDays = ShouldDrawLayer(pixelsPerMinute, 1440f, minDayCellWidth);
-			if (!drawQuarters && !drawSessions && !drawDays)
+			if (!drawQuarters && !drawSessions && !drawDays && !ShowSecondaryTimeZone)
 				return;
 
 			if (drawQuarters || drawSessions)
@@ -230,6 +250,179 @@ namespace NinjaTrader.NinjaScript.Indicators
 				DrawTimelineOutline(chartControl, activeSessionStart, activeSessionStart.AddHours(6), sessionY, sessionHeight, 2f);
 			if (drawDays)
 				DrawTimelineOutline(chartControl, activeTradingDayStart, activeTradingDayStart.AddDays(1), dayY, dayHeight, 2f);
+			if (ShowSecondaryTimeZone)
+				DrawSecondaryTimeZone(chartControl, visibleStart, visibleEnd, pixelsPerMinute, secondaryTimeY, secondaryTimeHeight);
+		}
+
+		private void DrawSecondaryTimeZone(ChartControl chartControl, DateTime visibleStart, DateTime visibleEnd,
+			float pixelsPerMinute, float y, float height)
+		{
+			const float titleWidth = 110f;
+			const float labelWidth = 52f;
+			const float minLabelSpacing = 55f;
+			float panelLeft = (float)ChartPanel.X;
+			float panelRight = panelLeft + (float)ChartPanel.W;
+			TimeZoneInfo targetTimeZone = GetSecondaryTimeZone();
+			float titleRight = Math.Min(panelRight, panelLeft + titleWidth);
+			int intervalMinutes = GetTimeLabelIntervalMinutes(pixelsPerMinute);
+			DateTime labelTime = GetFirstTimeLabel(visibleStart, intervalMinutes);
+			float lastLabelX = float.MinValue;
+			var row = new RectangleF(panelLeft, y, panelRight - panelLeft, height);
+
+			RenderTarget.FillRectangle(row, timelineNeutralBrush);
+			RenderTarget.DrawRectangle(row, timelineBorderBrush, 1f);
+			RenderTarget.DrawText(
+				UseLocalMachineTime ? "Local" : targetTimeZone.Id == "Israel Standard Time" ? "Jerusalem" : targetTimeZone.Id,
+				timelineTextFormat, new RectangleF(panelLeft, y, titleRight - panelLeft, height), timelineTextBrush);
+
+			for (; labelTime <= visibleEnd; labelTime = labelTime.AddMinutes(intervalMinutes))
+			{
+				float x = chartControl.GetXByTime(labelTime);
+				if (x < titleRight + labelWidth * 0.5f || x > panelRight - labelWidth * 0.5f || x - lastLabelX < minLabelSpacing)
+					continue;
+
+				DateTime convertedTime = ConvertChartTime(labelTime, Core.Globals.GeneralOptions.TimeZoneInfo, targetTimeZone);
+				RenderTarget.DrawLine(new Vector2(x, y), new Vector2(x, y + height), timelineBorderBrush, 1f);
+				RenderTarget.DrawText(convertedTime.ToString("HH:mm"), timelineTextFormat,
+					new RectangleF(x - labelWidth * 0.5f, y, labelWidth, height), timelineTextBrush);
+				lastLabelX = x;
+			}
+
+		}
+
+		private void SubscribeCrosshair()
+		{
+			ChartControl control = ChartControl;
+			if (control == null)
+				return;
+
+			crosshairChartControl = control;
+			control.Dispatcher.InvokeAsync(() =>
+			{
+				if (crosshairChartControl != control || State == State.Terminated || UserControlCollection == null)
+					return;
+
+				crosshairTimeText = new System.Windows.Controls.TextBlock
+				{
+					Foreground = Brushes.Gainsboro,
+					FontFamily = new System.Windows.Media.FontFamily("Arial"),
+					FontSize = 10,
+					FontWeight = System.Windows.FontWeights.SemiBold,
+					HorizontalAlignment = System.Windows.HorizontalAlignment.Center,
+					VerticalAlignment = System.Windows.VerticalAlignment.Center,
+					TextAlignment = System.Windows.TextAlignment.Center
+				};
+				crosshairTimeMarker = new System.Windows.Controls.Border
+				{
+					Background = Brushes.Black,
+					BorderBrush = Brushes.DimGray,
+					BorderThickness = new System.Windows.Thickness(1),
+					Child = crosshairTimeText,
+					Height = ChartingExtensions.ConvertFromVerticalPixels(20, control.PresentationSource),
+					HorizontalAlignment = System.Windows.HorizontalAlignment.Left,
+					IsHitTestVisible = false,
+					Opacity = 0.96,
+					VerticalAlignment = System.Windows.VerticalAlignment.Bottom,
+					Visibility = System.Windows.Visibility.Collapsed,
+					Width = ChartingExtensions.ConvertFromHorizontalPixels(68, control.PresentationSource)
+				};
+				System.Windows.Controls.Panel.SetZIndex(crosshairTimeMarker, int.MaxValue);
+				UserControlCollection.Add(crosshairTimeMarker);
+				control.PreviewMouseMove += OnChartMouseMove;
+				control.MouseLeave += OnChartMouseLeave;
+			});
+		}
+
+		private void UnsubscribeCrosshair()
+		{
+			ChartControl control = crosshairChartControl;
+			System.Windows.Controls.Border marker = crosshairTimeMarker;
+			crosshairChartControl = null;
+			crosshairTimeMarker = null;
+			crosshairTimeText = null;
+			if (control == null)
+				return;
+
+			control.Dispatcher.InvokeAsync(() =>
+			{
+				control.PreviewMouseMove -= OnChartMouseMove;
+				control.MouseLeave -= OnChartMouseLeave;
+				if (marker != null && UserControlCollection != null && UserControlCollection.Contains(marker))
+					UserControlCollection.Remove(marker);
+			});
+		}
+
+		private void OnChartMouseMove(object sender, MouseEventArgs e)
+		{
+			ChartControl control = crosshairChartControl;
+			if (!ShowSecondaryTimeZone || control == null || crosshairTimeMarker == null || crosshairTimeText == null
+				|| control.PresentationSource == null || ChartPanel == null
+				|| control.CrosshairType == CrosshairType.Off)
+			{
+				OnChartMouseLeave(sender, e);
+				return;
+			}
+			if (control.Properties.CrosshairIsLocked && crosshairTimeMarker.Visibility == System.Windows.Visibility.Visible)
+				return;
+
+			System.Windows.Point panelPoint = e.GetPosition(ChartPanel);
+			if (panelPoint.X < 0 || panelPoint.X > ChartPanel.ActualWidth
+				|| panelPoint.Y < 0 || panelPoint.Y > ChartPanel.ActualHeight)
+			{
+				OnChartMouseLeave(sender, e);
+				return;
+			}
+
+			int deviceX = ChartingExtensions.ConvertToHorizontalPixels(e.GetPosition(control).X, control.PresentationSource);
+			DateTime crosshairTime = ConvertChartTime(control.GetTimeByX(deviceX),
+				Core.Globals.GeneralOptions.TimeZoneInfo, GetSecondaryTimeZone());
+			double markerWidth = crosshairTimeMarker.Width;
+			double gap = ChartingExtensions.ConvertFromHorizontalPixels(6, control.PresentationSource);
+			double titleRight = ChartingExtensions.ConvertFromHorizontalPixels(110, control.PresentationSource);
+			double markerLeft = panelPoint.X + gap;
+			if (markerLeft + markerWidth > ChartPanel.ActualWidth)
+				markerLeft = panelPoint.X - markerWidth - gap;
+			markerLeft = Math.Max(titleRight, Math.Min(ChartPanel.ActualWidth - markerWidth, markerLeft));
+
+			crosshairTimeText.Text = crosshairTime.ToString("HH:mm:ss");
+			crosshairTimeMarker.Margin = new System.Windows.Thickness(markerLeft, 0, 0,
+				ChartingExtensions.ConvertFromVerticalPixels(2, control.PresentationSource));
+			crosshairTimeMarker.Visibility = System.Windows.Visibility.Visible;
+		}
+
+		private void OnChartMouseLeave(object sender, MouseEventArgs e)
+		{
+			if (crosshairChartControl != null && crosshairChartControl.CrosshairType != CrosshairType.Off
+				&& crosshairChartControl.Properties.CrosshairIsLocked && ShowSecondaryTimeZone)
+				return;
+			if (crosshairTimeMarker != null)
+				crosshairTimeMarker.Visibility = System.Windows.Visibility.Collapsed;
+		}
+
+		private TimeZoneInfo GetSecondaryTimeZone()
+		{
+			if (UseLocalMachineTime)
+				return TimeZoneInfo.Local;
+
+			try
+			{
+				return TimeZoneInfo.FindSystemTimeZoneById(string.IsNullOrWhiteSpace(SecondaryTimeZoneId)
+					? "Israel Standard Time"
+					: SecondaryTimeZoneId);
+			}
+			catch (TimeZoneNotFoundException)
+			{
+				return TimeZoneInfo.Local;
+			}
+			catch (InvalidTimeZoneException)
+			{
+				return TimeZoneInfo.Local;
+			}
+		}
+
+		private static DateTime ConvertChartTime(DateTime time, TimeZoneInfo sourceTimeZone, TimeZoneInfo targetTimeZone)
+		{
+			return TimeZoneInfo.ConvertTime(DateTime.SpecifyKind(time, DateTimeKind.Unspecified), sourceTimeZone, targetTimeZone);
 		}
 
 		private void DrawTimelineCell(float startX, float endX, float y, float height,
@@ -274,6 +467,21 @@ namespace NinjaTrader.NinjaScript.Indicators
 			return pixelsPerMinute * durationMinutes >= minimumWidth;
 		}
 
+		private static int GetTimeLabelIntervalMinutes(float pixelsPerMinute)
+		{
+			foreach (int minutes in TimeLabelIntervals)
+				if (minutes * pixelsPerMinute >= 55f)
+					return minutes;
+			return TimeLabelIntervals[TimeLabelIntervals.Length - 1];
+		}
+
+		private static DateTime GetFirstTimeLabel(DateTime time, int intervalMinutes)
+		{
+			long intervalTicks = TimeSpan.FromMinutes(intervalMinutes).Ticks;
+			long remainder = time.Ticks % intervalTicks;
+			return remainder == 0 ? time : time.AddTicks(intervalTicks - remainder);
+		}
+
 		private static int GetWeekQuarterIndex(DayOfWeek dayOfWeek)
 		{
 			switch (dayOfWeek)
@@ -283,6 +491,28 @@ namespace NinjaTrader.NinjaScript.Indicators
 				case DayOfWeek.Wednesday: return 2;
 				case DayOfWeek.Thursday: return 3;
 				default: return -1;
+			}
+		}
+
+		public sealed class TimeZoneIdConverter : StringConverter
+		{
+			public override bool GetStandardValuesSupported(ITypeDescriptorContext context)
+			{
+				return true;
+			}
+
+			public override bool GetStandardValuesExclusive(ITypeDescriptorContext context)
+			{
+				return true;
+			}
+
+			public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext context)
+			{
+				var timeZones = TimeZoneInfo.GetSystemTimeZones();
+				var ids = new string[timeZones.Count];
+				for (int index = 0; index < timeZones.Count; index++)
+					ids[index] = timeZones[index].Id;
+				return new StandardValuesCollection(ids);
 			}
 		}
 
@@ -329,6 +559,16 @@ namespace NinjaTrader.NinjaScript.Indicators
 		[NinjaScriptProperty]
 		[Display(Name = "LabelPosition", Description = "Where the session label is displayed on the chart", GroupName = "Display", Order = 1)]
 		public TextPositionFine LabelPosition { get; set; }
+
+		[Display(Name = "ShowSecondaryTimeZone", Description = "Show a converted time row below the Quarterly Theory timeline", GroupName = "Secondary Time", Order = 0)]
+		public bool ShowSecondaryTimeZone { get; set; }
+
+		[Display(Name = "UseLocalMachineTime", Description = "Use the computer's local time instead of the selected time zone", GroupName = "Secondary Time", Order = 1)]
+		public bool UseLocalMachineTime { get; set; }
+
+		[TypeConverter(typeof(TimeZoneIdConverter))]
+		[Display(Name = "SecondaryTimeZone", Description = "Time zone shown when local machine time is off", GroupName = "Secondary Time", Order = 2)]
+		public string SecondaryTimeZoneId { get; set; }
 
 		[NinjaScriptProperty]
 		[Display(Name = "DrawSessionLines", Description = "Draw vertical lines at each session open", GroupName = "Lines", Order = 0)]
