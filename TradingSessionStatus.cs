@@ -25,6 +25,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private static readonly int[] TimeLabelIntervals = { 1, 2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 10080 };
 
 		private TextFormat timelineTextFormat;
+		private TextFormat secondaryTimeTextFormat;
 		private SharpDX.Direct2D1.SolidColorBrush timelineTextBrush;
 		private SharpDX.Direct2D1.SolidColorBrush timelineBorderBrush;
 		private SharpDX.Direct2D1.SolidColorBrush timelineActiveBrush;
@@ -88,7 +89,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 						TimeZoneInfo.FindSystemTimeZoneById("Israel Standard Time")).Hour == 14,
 					"Quarterly timeline mapping is invalid.");
 
-				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 12f)
+				timelineTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 10f)
+				{
+					TextAlignment = TextAlignment.Center,
+					ParagraphAlignment = ParagraphAlignment.Center,
+					WordWrapping = WordWrapping.NoWrap
+				};
+				secondaryTimeTextFormat = new TextFormat(Core.Globals.DirectWriteFactory, "Arial", FontWeight.SemiBold, FontStyle.Normal, 12f)
 				{
 					TextAlignment = TextAlignment.Center,
 					ParagraphAlignment = ParagraphAlignment.Center,
@@ -106,6 +113,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				timelineTextFormat?.Dispose();
 				timelineTextFormat = null;
+				secondaryTimeTextFormat?.Dispose();
+				secondaryTimeTextFormat = null;
 			}
 		}
 
@@ -155,7 +164,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		private void DrawQuarterlyTimeline(ChartControl chartControl, DateTime visibleStart, DateTime visibleEnd)
 		{
-			if (RenderTarget == null || ChartPanel == null || timelineTextFormat == null || timelineTextBrush == null
+			if (RenderTarget == null || ChartPanel == null || timelineTextFormat == null
+				|| (ShowSecondaryTimeZone && secondaryTimeTextFormat == null) || timelineTextBrush == null
 				|| timelineBorderBrush == null || timelineActiveBrush == null || timelineNeutralBrush == null
 				|| quarterBrushes == null || quarterBrushes.Length != 4)
 				return;
@@ -273,7 +283,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			RenderTarget.DrawRectangle(row, timelineBorderBrush, 1f);
 			RenderTarget.DrawText(
 				UseLocalMachineTime ? "Local" : targetTimeZone.Id == "Israel Standard Time" ? "Jerusalem" : targetTimeZone.Id,
-				timelineTextFormat, new RectangleF(panelLeft, y, titleRight - panelLeft, height), timelineTextBrush);
+				secondaryTimeTextFormat, new RectangleF(panelLeft, y, titleRight - panelLeft, height), timelineTextBrush);
 
 			for (; labelTime <= visibleEnd; labelTime = labelTime.AddMinutes(intervalMinutes))
 			{
@@ -283,7 +293,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 				DateTime convertedTime = ConvertChartTime(labelTime, Core.Globals.GeneralOptions.TimeZoneInfo, targetTimeZone);
 				RenderTarget.DrawLine(new Vector2(x, y), new Vector2(x, y + height), timelineBorderBrush, 1f);
-				RenderTarget.DrawText(convertedTime.ToString("HH:mm"), timelineTextFormat,
+				RenderTarget.DrawText(convertedTime.ToString("HH:mm"), secondaryTimeTextFormat,
 					new RectangleF(x - labelWidth * 0.5f, y, labelWidth, height), timelineTextBrush);
 				lastLabelX = x;
 			}
