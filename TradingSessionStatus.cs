@@ -34,6 +34,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private ChartControl crosshairChartControl;
 		private System.Windows.Controls.Border crosshairTimeMarker;
 		private System.Windows.Controls.TextBlock crosshairTimeText;
+		private TimeZoneInfo sessionTimeZone;
 
 		private DateTime now = Core.Globals.Now;
 
@@ -41,7 +42,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 		{
 			if (State == State.SetDefaults)
 			{
-				Description = @"Displays Quarterly Theory sessions and 90-minute quarters in a timeline below price, using NinjaTrader's configured time zone.";
+				Description = @"Displays New York-time Quarterly Theory sessions and 90-minute quarters in a timeline below price.";
 				Name = "TradingSessionStatus";
 				Calculate = Calculate.OnBarClose;
 				IsOverlay = true;
@@ -77,6 +78,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 			}
 			else if (State == State.DataLoaded)
 			{
+				sessionTimeZone = FindTimeZoneOrDefault("Eastern Standard Time", Core.Globals.GeneralOptions.TimeZoneInfo);
 				System.Diagnostics.Debug.Assert(
 					GetSessionQuarterIndex(3) == 0
 					&& GetSessionQuarterIndex(0) == 1
@@ -85,6 +87,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 					&& !ShouldDrawLayer(0.01f, 90f, 6f)
 					&& GetTimeLabelIntervalMinutes(1f) == 60
 					&& GetFirstTimeLabel(new DateTime(2026, 1, 1, 12, 34, 0), 60).Hour == 13
+					&& ConvertChartTime(new DateTime(2026, 1, 1, 15, 0, 0),
+						TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"), sessionTimeZone).Hour == 18
 					&& ConvertChartTime(new DateTime(2026, 1, 1, 12, 0, 0), TimeZoneInfo.Utc,
 						TimeZoneInfo.FindSystemTimeZoneById("Israel Standard Time")).Hour == 14,
 					"Quarterly timeline mapping is invalid.");
@@ -164,7 +168,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		private void DrawQuarterlyTimeline(ChartControl chartControl, DateTime visibleStart, DateTime visibleEnd)
 		{
-			if (RenderTarget == null || ChartPanel == null || timelineTextFormat == null
+			if (RenderTarget == null || ChartPanel == null || sessionTimeZone == null || timelineTextFormat == null
 				|| (ShowSecondaryTimeZone && secondaryTimeTextFormat == null) || timelineTextBrush == null
 				|| timelineBorderBrush == null || timelineActiveBrush == null || timelineNeutralBrush == null
 				|| quarterBrushes == null || quarterBrushes.Length != 4)
@@ -195,15 +199,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 			bool drawDays = ShouldDrawLayer(pixelsPerMinute, 1440f, minDayCellWidth);
 			if (!drawQuarters && !drawSessions && !drawDays && !ShowSecondaryTimeZone)
 				return;
+			TimeZoneInfo chartTimeZone = Core.Globals.GeneralOptions.TimeZoneInfo;
+			DateTime sessionVisibleStart = ConvertChartTime(visibleStart, chartTimeZone, sessionTimeZone);
+			DateTime sessionVisibleEnd = ConvertChartTime(visibleEnd, chartTimeZone, sessionTimeZone);
 
 			if (drawQuarters || drawSessions)
 			{
-				DateTime sessionStart = visibleStart.Date.AddHours((visibleStart.Hour / 6) * 6);
-				float sessionStartX = chartControl.GetXByTime(sessionStart);
-				while (sessionStart <= visibleEnd)
+				DateTime sessionStart = sessionVisibleStart.Date.AddHours((sessionVisibleStart.Hour / 6) * 6);
+				float sessionStartX = chartControl.GetXByTime(ConvertChartTime(sessionStart, sessionTimeZone, chartTimeZone));
+				while (sessionStart <= sessionVisibleEnd)
 				{
 					DateTime sessionEnd = sessionStart.AddHours(6);
-					float sessionEndX = chartControl.GetXByTime(sessionEnd);
+					float sessionEndX = chartControl.GetXByTime(ConvertChartTime(sessionEnd, sessionTimeZone, chartTimeZone));
 					int sessionIndex = sessionStart.Hour / 6;
 
 					if (drawSessions)
@@ -217,7 +224,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 						{
 							float quarterEndX = quarterIndex == 3
 								? sessionEndX
-								: chartControl.GetXByTime(sessionStart.AddMinutes((quarterIndex + 1) * 90));
+								: chartControl.GetXByTime(ConvertChartTime(
+									sessionStart.AddMinutes((quarterIndex + 1) * 90), sessionTimeZone, chartTimeZone));
 							DrawTimelineCell(quarterStartX, quarterEndX, quarterY, quarterHeight,
 								QuarterLabels[quarterIndex], quarterBrushes[quarterIndex]);
 							quarterStartX = quarterEndX;
@@ -231,12 +239,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 			if (drawDays)
 			{
-				DateTime tradingDayStart = visibleStart.Date.AddDays(-1).AddHours(18);
-				float tradingDayStartX = chartControl.GetXByTime(tradingDayStart);
-				for (; tradingDayStart <= visibleEnd; tradingDayStart = tradingDayStart.AddDays(1))
+				DateTime tradingDayStart = sessionVisibleStart.Date.AddDays(-1).AddHours(18);
+				float tradingDayStartX = chartControl.GetXByTime(ConvertChartTime(tradingDayStart, sessionTimeZone, chartTimeZone));
+				for (; tradingDayStart <= sessionVisibleEnd; tradingDayStart = tradingDayStart.AddDays(1))
 				{
 					DateTime tradingDayEnd = tradingDayStart.AddDays(1);
-					float tradingDayEndX = chartControl.GetXByTime(tradingDayEnd);
+					float tradingDayEndX = chartControl.GetXByTime(ConvertChartTime(tradingDayEnd, sessionTimeZone, chartTimeZone));
 					DayOfWeek tradingDay = tradingDayEnd.DayOfWeek;
 					int weekQuarter = GetWeekQuarterIndex(tradingDay);
 					DrawTimelineCell(tradingDayStartX, tradingDayEndX, dayY, dayHeight,
@@ -245,7 +253,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 			}
 
-			DateTime nowTime = Now;
+			DateTime nowTime = ConvertChartTime(Now, chartTimeZone, sessionTimeZone);
 			int activeSessionIndex = nowTime.Hour / 6;
 			DateTime activeSessionStart = nowTime.Date.AddHours(activeSessionIndex * 6);
 			int activeQuarterIndex = Math.Min(3, (int)(nowTime - activeSessionStart).TotalMinutes / 90);
@@ -255,11 +263,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 				: nowTime.Date.AddDays(-1).AddHours(18);
 
 			if (drawQuarters)
-				DrawTimelineOutline(chartControl, activeQuarterStart, activeQuarterStart.AddMinutes(90), quarterY, quarterHeight, 2f);
+				DrawTimelineOutline(chartControl,
+					ConvertChartTime(activeQuarterStart, sessionTimeZone, chartTimeZone),
+					ConvertChartTime(activeQuarterStart.AddMinutes(90), sessionTimeZone, chartTimeZone), quarterY, quarterHeight, 2f);
 			if (drawSessions)
-				DrawTimelineOutline(chartControl, activeSessionStart, activeSessionStart.AddHours(6), sessionY, sessionHeight, 2f);
+				DrawTimelineOutline(chartControl,
+					ConvertChartTime(activeSessionStart, sessionTimeZone, chartTimeZone),
+					ConvertChartTime(activeSessionStart.AddHours(6), sessionTimeZone, chartTimeZone), sessionY, sessionHeight, 2f);
 			if (drawDays)
-				DrawTimelineOutline(chartControl, activeTradingDayStart, activeTradingDayStart.AddDays(1), dayY, dayHeight, 2f);
+				DrawTimelineOutline(chartControl,
+					ConvertChartTime(activeTradingDayStart, sessionTimeZone, chartTimeZone),
+					ConvertChartTime(activeTradingDayStart.AddDays(1), sessionTimeZone, chartTimeZone), dayY, dayHeight, 2f);
 			if (ShowSecondaryTimeZone)
 				DrawSecondaryTimeZone(chartControl, visibleStart, visibleEnd, pixelsPerMinute, secondaryTimeY, secondaryTimeHeight);
 		}
@@ -414,19 +428,24 @@ namespace NinjaTrader.NinjaScript.Indicators
 			if (UseLocalMachineTime)
 				return TimeZoneInfo.Local;
 
+			return FindTimeZoneOrDefault(string.IsNullOrWhiteSpace(SecondaryTimeZoneId)
+				? "Israel Standard Time"
+				: SecondaryTimeZoneId, TimeZoneInfo.Local);
+		}
+
+		private static TimeZoneInfo FindTimeZoneOrDefault(string id, TimeZoneInfo fallback)
+		{
 			try
 			{
-				return TimeZoneInfo.FindSystemTimeZoneById(string.IsNullOrWhiteSpace(SecondaryTimeZoneId)
-					? "Israel Standard Time"
-					: SecondaryTimeZoneId);
+				return TimeZoneInfo.FindSystemTimeZoneById(id);
 			}
 			catch (TimeZoneNotFoundException)
 			{
-				return TimeZoneInfo.Local;
+				return fallback;
 			}
 			catch (InvalidTimeZoneException)
 			{
-				return TimeZoneInfo.Local;
+				return fallback;
 			}
 		}
 

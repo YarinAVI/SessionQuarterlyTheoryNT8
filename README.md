@@ -1,6 +1,6 @@
 # Session Quarterly Theory for NinjaTrader 8
 
-`TradingSessionStatus` displays a compact Quarterly Theory timeline below price. It uses the chart/NinjaTrader time zone, follows playback time when Market Replay is active, and can show a second converted time row.
+`TradingSessionStatus` displays a compact Quarterly Theory timeline below price. Session boundaries use New York time, playback follows Market Replay, and an optional row can show another time zone.
 
 ## Timeline
 
@@ -35,7 +35,7 @@ The active 90-minute quarter, session, and trading day are outlined when they ar
 ## Notes
 
 - Session times are fixed to the Quarterly Theory cycle shown above.
-- Times use NinjaTrader's configured chart time zone.
+- Session, quarter, and trading-day boundaries use New York time with daylight-saving changes applied automatically.
 - The secondary time row is enabled by default and uses `Israel Standard Time` (Jerusalem). Choose another Windows time zone or enable `UseLocalMachineTime` in the indicator properties.
 - With NinjaTrader's crosshair enabled, the converted `HH:mm:ss` marker follows the pointer beside the crosshair so the line does not cover it.
 - Timeline detail automatically reduces when zoomed out to avoid unnecessary rendering work.
