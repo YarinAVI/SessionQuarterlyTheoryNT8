@@ -87,6 +87,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 					&& !ShouldDrawLayer(0.01f, 90f, 6f)
 					&& GetTimeLabelIntervalMinutes(1f) == 60
 					&& GetFirstTimeLabel(new DateTime(2026, 1, 1, 12, 34, 0), 60).Hour == 13
+					&& GetQuarterStart(new DateTime(2026, 1, 2, 19, 44, 0)) == new DateTime(2026, 1, 2, 19, 30, 0)
+					&& GetTradingDayStart(new DateTime(2026, 1, 2, 2, 0, 0)) == new DateTime(2026, 1, 1, 18, 0, 0)
 					&& ConvertChartTime(new DateTime(2026, 1, 1, 15, 0, 0),
 						TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time"), sessionTimeZone).Hour == 18
 					&& ConvertChartTime(new DateTime(2026, 1, 1, 12, 0, 0), TimeZoneInfo.Utc,
@@ -163,10 +165,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 			DateTime visibleStart = Bars.GetTime(fromIndex);
 			DateTime visibleEnd = Bars.GetTime(toIndex);
 
-			DrawQuarterlyTimeline(chartControl, visibleStart, visibleEnd);
+			DrawQuarterlyTimeline(chartControl, fromIndex, toIndex, visibleStart, visibleEnd);
 		}
 
-		private void DrawQuarterlyTimeline(ChartControl chartControl, DateTime visibleStart, DateTime visibleEnd)
+		private void DrawQuarterlyTimeline(ChartControl chartControl, int fromIndex, int toIndex,
+			DateTime visibleStart, DateTime visibleEnd)
 		{
 			if (RenderTarget == null || ChartPanel == null || sessionTimeZone == null || timelineTextFormat == null
 				|| (ShowSecondaryTimeZone && secondaryTimeTextFormat == null) || timelineTextBrush == null
@@ -194,16 +197,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 			float secondaryTimeY = dayY + dayHeight;
 			double visibleMinutes = Math.Max(1d, (visibleEnd - visibleStart).TotalMinutes);
 			float pixelsPerMinute = (float)ChartPanel.W / (float)visibleMinutes;
-			bool drawQuarters = ShouldDrawLayer(pixelsPerMinute, 90f, minDetailedCellWidth);
-			bool drawSessions = ShouldDrawLayer(pixelsPerMinute, 360f, minDetailedCellWidth);
-			bool drawDays = ShouldDrawLayer(pixelsPerMinute, 1440f, minDayCellWidth);
+			bool timeBased = chartControl.BarSpacingType == BarSpacingType.TimeBased;
+			bool drawQuarters = !timeBased || ShouldDrawLayer(pixelsPerMinute, 90f, minDetailedCellWidth);
+			bool drawSessions = !timeBased || ShouldDrawLayer(pixelsPerMinute, 360f, minDetailedCellWidth);
+			bool drawDays = !timeBased || ShouldDrawLayer(pixelsPerMinute, 1440f, minDayCellWidth);
 			if (!drawQuarters && !drawSessions && !drawDays && !ShowSecondaryTimeZone)
 				return;
 			TimeZoneInfo chartTimeZone = Core.Globals.GeneralOptions.TimeZoneInfo;
 			DateTime sessionVisibleStart = ConvertChartTime(visibleStart, chartTimeZone, sessionTimeZone);
 			DateTime sessionVisibleEnd = ConvertChartTime(visibleEnd, chartTimeZone, sessionTimeZone);
 
-			if (drawQuarters || drawSessions)
+			if (!timeBased)
+				DrawBarAlignedTimeline(chartControl, fromIndex, toIndex, chartTimeZone,
+					quarterY, quarterHeight, sessionY, sessionHeight, dayY, dayHeight);
+			else if (drawQuarters || drawSessions)
 			{
 				DateTime sessionStart = sessionVisibleStart.Date.AddHours((sessionVisibleStart.Hour / 6) * 6);
 				float sessionStartX = chartControl.GetXByTime(ConvertChartTime(sessionStart, sessionTimeZone, chartTimeZone));
@@ -237,7 +244,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 				}
 			}
 
-			if (drawDays)
+			if (timeBased && drawDays)
 			{
 				DateTime tradingDayStart = sessionVisibleStart.Date.AddDays(-1).AddHours(18);
 				float tradingDayStartX = chartControl.GetXByTime(ConvertChartTime(tradingDayStart, sessionTimeZone, chartTimeZone));
@@ -262,24 +269,110 @@ namespace NinjaTrader.NinjaScript.Indicators
 				? nowTime.Date.AddHours(18)
 				: nowTime.Date.AddDays(-1).AddHours(18);
 
-			if (drawQuarters)
+			if (timeBased && drawQuarters)
 				DrawTimelineOutline(chartControl,
 					ConvertChartTime(activeQuarterStart, sessionTimeZone, chartTimeZone),
 					ConvertChartTime(activeQuarterStart.AddMinutes(90), sessionTimeZone, chartTimeZone), quarterY, quarterHeight, 2f);
-			if (drawSessions)
+			if (timeBased && drawSessions)
 				DrawTimelineOutline(chartControl,
 					ConvertChartTime(activeSessionStart, sessionTimeZone, chartTimeZone),
 					ConvertChartTime(activeSessionStart.AddHours(6), sessionTimeZone, chartTimeZone), sessionY, sessionHeight, 2f);
-			if (drawDays)
+			if (timeBased && drawDays)
 				DrawTimelineOutline(chartControl,
 					ConvertChartTime(activeTradingDayStart, sessionTimeZone, chartTimeZone),
 					ConvertChartTime(activeTradingDayStart.AddDays(1), sessionTimeZone, chartTimeZone), dayY, dayHeight, 2f);
 			if (ShowSecondaryTimeZone)
-				DrawSecondaryTimeZone(chartControl, visibleStart, visibleEnd, pixelsPerMinute, secondaryTimeY, secondaryTimeHeight);
+				DrawSecondaryTimeZone(chartControl, fromIndex, toIndex, visibleStart, visibleEnd,
+					pixelsPerMinute, secondaryTimeY, secondaryTimeHeight);
 		}
 
-		private void DrawSecondaryTimeZone(ChartControl chartControl, DateTime visibleStart, DateTime visibleEnd,
-			float pixelsPerMinute, float y, float height)
+		private void DrawBarAlignedTimeline(ChartControl chartControl, int fromIndex, int toIndex,
+			TimeZoneInfo chartTimeZone, float quarterY, float quarterHeight,
+			float sessionY, float sessionHeight, float dayY, float dayHeight)
+		{
+			float panelLeft = (float)ChartPanel.X;
+			float panelRight = panelLeft + (float)ChartPanel.W;
+			DateTime sessionTime = ConvertChartTime(Bars.GetTime(fromIndex), chartTimeZone, sessionTimeZone);
+			DateTime sessionStart = GetSessionStart(sessionTime);
+			DateTime quarterStart = GetQuarterStart(sessionTime);
+			DateTime tradingDayStart = GetTradingDayStart(sessionTime);
+			DateTime nowTime = ConvertChartTime(Now, chartTimeZone, sessionTimeZone);
+			DateTime activeSessionStart = GetSessionStart(nowTime);
+			DateTime activeQuarterStart = GetQuarterStart(nowTime);
+			DateTime activeTradingDayStart = GetTradingDayStart(nowTime);
+			float quarterStartX = panelLeft;
+			float sessionStartX = panelLeft;
+			float tradingDayStartX = panelLeft;
+			float previousBarX = chartControl.GetXByBarIndex(ChartBars, fromIndex);
+
+			for (int index = fromIndex + 1; index <= toIndex; index++)
+			{
+				float barX = chartControl.GetXByBarIndex(ChartBars, index);
+				float boundaryX = (previousBarX + barX) * 0.5f;
+				sessionTime = ConvertChartTime(Bars.GetTime(index), chartTimeZone, sessionTimeZone);
+				DateTime nextSessionStart = GetSessionStart(sessionTime);
+				DateTime nextQuarterStart = GetQuarterStart(sessionTime);
+				DateTime nextTradingDayStart = GetTradingDayStart(sessionTime);
+
+				if (nextQuarterStart != quarterStart)
+				{
+					int quarterIndex = (int)((quarterStart - sessionStart).TotalMinutes / 90d);
+					DrawTimelineCell(quarterStartX, boundaryX, quarterY, quarterHeight,
+						QuarterLabels[quarterIndex], quarterBrushes[quarterIndex]);
+					if (quarterStart == activeQuarterStart)
+						DrawTimelineOutline(quarterStartX, boundaryX, quarterY, quarterHeight, 2f);
+					quarterStart = nextQuarterStart;
+					quarterStartX = boundaryX;
+				}
+
+				if (nextSessionStart != sessionStart)
+				{
+					int sessionIndex = sessionStart.Hour / 6;
+					DrawTimelineCell(sessionStartX, boundaryX, sessionY, sessionHeight,
+						SessionLabels[sessionIndex], quarterBrushes[GetSessionQuarterIndex(sessionIndex)]);
+					if (sessionStart == activeSessionStart)
+						DrawTimelineOutline(sessionStartX, boundaryX, sessionY, sessionHeight, 2f);
+					sessionStart = nextSessionStart;
+					sessionStartX = boundaryX;
+				}
+
+				if (nextTradingDayStart != tradingDayStart)
+				{
+					DayOfWeek tradingDay = tradingDayStart.AddDays(1).DayOfWeek;
+					int weekQuarter = GetWeekQuarterIndex(tradingDay);
+					DrawTimelineCell(tradingDayStartX, boundaryX, dayY, dayHeight,
+						DayLabels[(int)tradingDay], weekQuarter >= 0 ? quarterBrushes[weekQuarter] : timelineNeutralBrush);
+					if (tradingDayStart == activeTradingDayStart)
+						DrawTimelineOutline(tradingDayStartX, boundaryX, dayY, dayHeight, 2f);
+					tradingDayStart = nextTradingDayStart;
+					tradingDayStartX = boundaryX;
+				}
+
+				previousBarX = barX;
+			}
+
+			int finalQuarterIndex = (int)((quarterStart - sessionStart).TotalMinutes / 90d);
+			DrawTimelineCell(quarterStartX, panelRight, quarterY, quarterHeight,
+				QuarterLabels[finalQuarterIndex], quarterBrushes[finalQuarterIndex]);
+			if (quarterStart == activeQuarterStart)
+				DrawTimelineOutline(quarterStartX, panelRight, quarterY, quarterHeight, 2f);
+
+			int finalSessionIndex = sessionStart.Hour / 6;
+			DrawTimelineCell(sessionStartX, panelRight, sessionY, sessionHeight,
+				SessionLabels[finalSessionIndex], quarterBrushes[GetSessionQuarterIndex(finalSessionIndex)]);
+			if (sessionStart == activeSessionStart)
+				DrawTimelineOutline(sessionStartX, panelRight, sessionY, sessionHeight, 2f);
+
+			DayOfWeek finalTradingDay = tradingDayStart.AddDays(1).DayOfWeek;
+			int finalWeekQuarter = GetWeekQuarterIndex(finalTradingDay);
+			DrawTimelineCell(tradingDayStartX, panelRight, dayY, dayHeight,
+				DayLabels[(int)finalTradingDay], finalWeekQuarter >= 0 ? quarterBrushes[finalWeekQuarter] : timelineNeutralBrush);
+			if (tradingDayStart == activeTradingDayStart)
+				DrawTimelineOutline(tradingDayStartX, panelRight, dayY, dayHeight, 2f);
+		}
+
+		private void DrawSecondaryTimeZone(ChartControl chartControl, int fromIndex, int toIndex,
+			DateTime visibleStart, DateTime visibleEnd, float pixelsPerMinute, float y, float height)
 		{
 			const float titleWidth = 110f;
 			const float labelWidth = 52f;
@@ -298,6 +391,24 @@ namespace NinjaTrader.NinjaScript.Indicators
 			RenderTarget.DrawText(
 				UseLocalMachineTime ? "Local" : targetTimeZone.Id == "Israel Standard Time" ? "Jerusalem" : targetTimeZone.Id,
 				secondaryTimeTextFormat, new RectangleF(panelLeft, y, titleRight - panelLeft, height), timelineTextBrush);
+
+			if (chartControl.BarSpacingType != BarSpacingType.TimeBased)
+			{
+				for (int index = fromIndex; index <= toIndex; index++)
+				{
+					float x = chartControl.GetXByBarIndex(ChartBars, index);
+					if (x < titleRight + labelWidth * 0.5f || x > panelRight - labelWidth * 0.5f || x - lastLabelX < minLabelSpacing)
+						continue;
+
+					DateTime convertedTime = ConvertChartTime(Bars.GetTime(index),
+						Core.Globals.GeneralOptions.TimeZoneInfo, targetTimeZone);
+					RenderTarget.DrawLine(new Vector2(x, y), new Vector2(x, y + height), timelineBorderBrush, 1f);
+					RenderTarget.DrawText(convertedTime.ToString("HH:mm"), secondaryTimeTextFormat,
+						new RectangleF(x - labelWidth * 0.5f, y, labelWidth, height), timelineTextBrush);
+					lastLabelX = x;
+				}
+				return;
+			}
 
 			for (; labelTime <= visibleEnd; labelTime = labelTime.AddMinutes(intervalMinutes))
 			{
@@ -398,7 +509,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 			}
 
 			int deviceX = ChartingExtensions.ConvertToHorizontalPixels(e.GetPosition(control).X, control.PresentationSource);
-			DateTime crosshairTime = ConvertChartTime(control.GetTimeByX(deviceX),
+			DateTime chartTime = control.BarSpacingType == BarSpacingType.TimeBased
+				? control.GetTimeByX(deviceX)
+				: control.GetTimeBySlotIndex(Math.Round(control.GetSlotIndexByX(deviceX)));
+			DateTime crosshairTime = ConvertChartTime(chartTime,
 				Core.Globals.GeneralOptions.TimeZoneInfo, GetSecondaryTimeZone());
 			double markerWidth = crosshairTimeMarker.Width;
 			double gap = ChartingExtensions.ConvertFromHorizontalPixels(6, control.PresentationSource);
@@ -473,10 +587,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 		private void DrawTimelineOutline(ChartControl chartControl, DateTime start, DateTime end, float y, float height, float width)
 		{
-			float panelLeft = (float)ChartPanel.X;
-			float panelRight = panelLeft + (float)ChartPanel.W;
 			float startX = chartControl.GetXByTime(start);
 			float endX = chartControl.GetXByTime(end);
+			DrawTimelineOutline(startX, endX, y, height, width);
+		}
+
+		private void DrawTimelineOutline(float startX, float endX, float y, float height, float width)
+		{
+			float panelLeft = (float)ChartPanel.X;
+			float panelRight = panelLeft + (float)ChartPanel.W;
 			float left = Math.Max(panelLeft, Math.Min(startX, endX));
 			float right = Math.Min(panelRight, Math.Max(startX, endX));
 			if (right <= left)
@@ -489,6 +608,24 @@ namespace NinjaTrader.NinjaScript.Indicators
 		{
 			// 18:00 Asia = Q1, 00:00 London = Q2, 06:00 AM = Q3, 12:00 PM = Q4.
 			return (sessionIndex + 1) % 4;
+		}
+
+		private static DateTime GetSessionStart(DateTime time)
+		{
+			return time.Date.AddHours((time.Hour / 6) * 6);
+		}
+
+		private static DateTime GetQuarterStart(DateTime time)
+		{
+			DateTime sessionStart = GetSessionStart(time);
+			return sessionStart.AddMinutes((int)(time - sessionStart).TotalMinutes / 90 * 90);
+		}
+
+		private static DateTime GetTradingDayStart(DateTime time)
+		{
+			return time.TimeOfDay >= TimeSpan.FromHours(18)
+				? time.Date.AddHours(18)
+				: time.Date.AddDays(-1).AddHours(18);
 		}
 
 		private static bool ShouldDrawLayer(float pixelsPerMinute, float durationMinutes, float minimumWidth)
